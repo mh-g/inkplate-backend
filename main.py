@@ -1,29 +1,57 @@
-# This is a sample Python script.
-
-import paho.mqtt.client as mqtt
-from datetime import datetime
 import os
-import time
 import threading
-
+import time
+from datetime import datetime
+from datetime import timedelta
+import paho.mqtt.client as mqtt
+import rrdtool
 
 def publishTime(client):
     now = datetime.now()
     client.publish("/inkplate/in/datetime", now.strftime("%Y %m %d %H %M %S"))
 
 
+def publishTrains(client):
+    # Bahnhofsinfo Gettorf (mh: needs to implement access to real data!)
+    trains = "Abfahrten Gettorf@--:--@--:--@--:--@--:--"
+    try:
+        if os.path.exists("/tmp/station-Gettorf.txt"):
+            with open("/tmp/station-Gettorf.txt", "r") as f:
+                trains = f.readline ()
+            f.close()
+    except Exception as e:
+        print("error reading station file:", e)
+    client.publish ("/inkplate/in/station", trains, qos=1, retain=True)
+
+
 class TimeThread (threading.Thread):
-    # publish server time (hourly)
+    # publish server time and station info (once per minute)
     def run(self):
         while True:
+            publishTrains(client)
             publishTime(client)
-            time.sleep(60 * 60)
+            time.sleep(60)
 
 
 def send_config(client):
-    client.publish("/inkplate/in/padchecktime", "10", qos=1, retain=True)  # in seconds, must be >= 2s!
-    client.publish("/inkplate/in/clockupdate", "60", qos=1, retain=True)  # in seconds, must be >= padchecktime
-    client.publish("/inkplate/in/dataupdate", "5", qos=1, retain=True)  # in clockupdate-cycles
+    def send_udpaterates(client):
+        now = datetime.now()
+        clockupdate = 3600 # clock and data updates hourly, pad checked hourly
+        dataupdate = 1
+        padchecktime = 3600
+        if now.hour in range(5, 8): # clock is up to date, data max 5 mins old, pad checked every 10 secs
+            clockupdate = 60
+            dataupdate = 5
+            padchecktime = 10
+        elif now.hour in range(8, 21): # clock is up to date, data max 30 mins old, pad checked every 60 secs
+            clockupdate = 60
+            dataupdate = 30
+            padchecktime = 60
+        client.publish("/inkplate/in/clockupdate", str(clockupdate), qos=1, retain=True)  # in seconds, must be >= padchecktime
+        client.publish("/inkplate/in/dataupdate", str(dataupdate), qos=1, retain=True)  # in clockupdate-cycles
+        client.publish("/inkplate/in/padchecktime", "10", qos=1, retain=True)  # in seconds, must be >= 2s!
+
+    send_udpaterates(client)
     # WLAN times order scheme:
     # 00:00:00 < wlan-on < wlan-off <= 23:59:59
     client.publish("/inkplate/in/wlan-off", "22:00:00", qos=1, retain=True)   # next WLAN turn off time
@@ -68,30 +96,32 @@ def handleMenuLevel(aClient, aMenuLevel):
 
 def handleBattery(aClient, aBattery):
     battery = float(aBattery)
-#    print("Battery %f" % battery)
 
 
 def handleTemperature(aClient, aTemperature):
     temperature = float(aTemperature)
-#    print("Temperature %f" % temperature)
 
 
 def handlePressure(aClient, aPressure):
     pressure = float(aPressure)
-#    print("Pressure %f" % pressure)
 
 
 def handleHumidity(aClient, aHumidity):
     humidity = float(aHumidity)
-#    print("Humidity %f" % humidity)
 
 
 def handleReset(aClient, aReset):
     def publishEnvSensors(which):
-        def appendFile(filename):
+        def appendFile(filename, digits):
             f = open(filename, "r")
-            message = f.readline() + "@"
+            value = float(f.readline())
             f.close()
+            if (digits == 1):
+                message = "{:.1f}".format (value) + "@"
+            elif (digits == 2):
+                message = "{:.2f}".format (value) + "@"
+            else:
+                message = str(value) + "@"
             return message
 
         message = ""
@@ -106,37 +136,68 @@ def handleReset(aClient, aReset):
         if not os.path.exists(path):
             message = "<Keine Daten>"
         else:
-            message = appendFile(path + "/temperature") \
-                      + appendFile(path + "/pressure") \
-                      + appendFile(path + "/humidity") \
-                      + appendFile(path + "/battery")
+            message = appendFile(path + "/temperature", 1) \
+                      + appendFile(path + "/pressure", 1) \
+                      + appendFile(path + "/humidity", 1) \
+                      + appendFile(path + "/battery", 2)
             modificationTime = time.localtime(os.path.getmtime(path + "/temperature"))
             message += time.strftime("%H:%M", modificationTime)
+            message = message.replace (" ", "")
         aClient.publish("/inkplate/in/"+which, message, qos=1, retain=True)
 
+    def publishPower():
+        # power (mh: needs to implement access to real data!)
+        today = datetime.now()
+        database = "/srv/dev-disk-by-label-DISK1/localdata/powermeter.rrd"
+        max = rrdtool.fetch (database, "MAX", "--start=" + today.strftime("%Y%m%d"), "--end=" + today.strftime('%Y%m%d'))
+        yesterday = today - timedelta (days = 1)
+        min = rrdtool.fetch (database, "MAX", "--start=" + yesterday.strftime("%Y%m%d"), "--end=" + yesterday.strftime('%Y%m%d'))
+        day = yesterday.strftime ("%d.%m.%Y")
+        consumption = max[2][0][0] - min[2][0][0]
+        if (consumption < 0.001):
+            assessmentConsumption = "2"
+        elif (consumption < 1):
+            assessmentConsumption = "1"
+        elif (consumption < 5.0):
+            assessmentConsumption = "0"
+        elif (consumption < 7.0):
+            assessmentConsumption = "1"
+        else:
+            assessmentProduction = "2"
+        production = max[2][0][1] - min[2][0][1]
+        if (production < 0.001):
+            assessmentProduction = "-2"
+        elif (production < 0.1):
+            assessmentProduction = "-1"
+        elif (production < 0.5):
+            assessmentProduction = "0"
+        elif (production < 0.9):
+            assessmentProduction = "1"
+        else:
+            assessmentProduction = "2"
+        aClient.publish ("/inkplate/in/power", f"{day}@{consumption:.3f}@{assessmentConsumption}@{production:.3f}@{assessmentProduction}", qos=1, retain=True)
+
+    def publishMOTD():
+        # MOTD (mh: needs to implement access to real data!)
+        line1 = ""
+        line2 = ""
+        aClient.publish ("/inkplate/in/motd", f"{line1}@{line2}", qos=1, retain=True)
+
+    send_config(aClient)
+    print ("handleReset")
     publishTime(client)
+    print (". time")
     publishEnvSensors("indoor")
+    print (". indoor")
     publishEnvSensors("outdoor")
-
-    # power (mh: needs to implement access to real data!)
-    day = "02.08.2020"
-    consumption = 6.789
-    assessmentConsumption = "0"
-    production = 0.123
-    assessmentProduction = "-1"
-    aClient.publish ("/inkplate/in/power", f"{day}@{consumption}@{assessmentConsumption}@{production}@{assessmentProduction}", qos=1, retain=True)
-
-    # Bahnhofsinfo Gettorf (mh: needs to implement access to real data!)
-    station = "Zuege Gettorf - Kiel"
-    train1 = "--:-- ---"
-    train2 = "--:-- ---"
-    train3 = "--:-- ---"
-    aClient.publish ("/inkplate/in/station", f"{station}@{train1}@{train2}@{train3}", qos=1, retain=True)
-
-    # MOTD (mh: needs to implement access to real data!)
-    line1 = ""
-    line2 = ""
-    aClient.publish ("/inkplate/in/motd", f"{line1}@{line2}", qos=1, retain=True)
+    print (". outdoor")
+    publishPower()
+    print (". power")
+    publishTrains(client)
+    print (". trains")
+    publishMOTD()
+    print (". motd")
+    print ("... done")
 
 
 if __name__ == '__main__':
