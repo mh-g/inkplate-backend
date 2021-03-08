@@ -310,8 +310,8 @@ def fullUpdate(aClient):
         my_principal = client.principal()
 
         results = []
-        results += getEvents (my_principal, "Müllabfuhr", "4f7cdade-64f0-9d35-ae78-4bd84ec8d89b", +1, 0)   # tomorrow
-        results += getEvents (my_principal, "Geburtstage", "3b626971-7de3-f82a-1899-8fe2d85c04e1", 0, 0)   # today
+        results += getEvents (my_principal, "Müllabfuhr", "4f7cdade-64f0-9d35-ae78-4bd84ec8d89b", +1, 1)   # tomorrow
+        results += getEvents (my_principal, "Geburtstage", "3b626971-7de3-f82a-1899-8fe2d85c04e1", 0, 1)   # today
         line1 = ""
         line2 = ""
         print (results)
