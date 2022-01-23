@@ -7,6 +7,8 @@ import paho.mqtt.client as mqtt
 import rrdtool
 from PIL import Image
 
+import sunriseset
+
 ## We'll try to use the local caldav library, not the system-installed
 sys.path.insert(0, '..')
 import caldav
@@ -28,6 +30,42 @@ def publishTrains(client):
     except Exception as e:
         print("error reading station file:", e)
     client.publish ("/inkplate/in/station", trains, qos=1, retain=True)
+
+
+def publishSunTimes(client):
+    sunTimes = "--:--@--:--@--:--@--:--@--:--"
+    try:
+        times=sun(lat=54.407777777778,long=9.9741666666667)
+        sunTimes = f"{times.sunrise()[:5]}@{times.solarnoon()[:5]}@{times.sunset()[:5]}@--:--@--:--"
+        client.publish("/inkplate/in/suntimes", sunTimes, qos=1, retain=True)
+    except:
+        pass
+
+
+def publishLowest(client):
+    lowest = "--:--@???@--:--@???@???"
+    try:
+        try:
+            minTempTime, minTemperature, minPressTime, minPressure = get_lowest()
+            lowest = f"{minTempTime.strftime('%H:%M')[:5]}@{minTemperature:.1f}@{minPressTime.strftime('%H:%M')[:5]}@{minPressure:4.0f}@???"
+        except:
+            pass
+        client.publish("/inkplate/in/lowest", lowest, qos=1, retain=True)
+    except:
+        pass
+
+
+def publishHighest(client):
+    lowest = "--:--@???@--:--@???@???"
+    try:
+        try:
+            maxTempTime, maxTemperature, maxPressTime, maxPressure = get_highest()
+            highest = f"{maxTempTime.strftime('%H:%M')[:5]}@{maxTemperature:.1f}@{maxPressTime.strftime('%H:%M')[:5]}@{maxPressure:4.0f}@???"
+        except:
+            pass
+        client.publish("/inkplate/in/lowest", lowest, qos=1, retain=True)
+    except:
+        pass
 
 
 class TimeThread (threading.Thread):
@@ -163,43 +201,45 @@ def fullUpdate(aClient):
         aClient.publish("/inkplate/in/"+which, message, qos=1, retain=True)
 
     def publishPower():
-        # power (mh: needs to implement access to real data!)
-        today = datetime.now()
-        database = "/srv/dev-disk-by-label-DISK1/localdata/powermeter.rrd"
-        max = rrdtool.fetch (database, "MAX", "--start=" + today.strftime("%Y%m%d"), "--end=" + today.strftime('%Y%m%d'))
-        yesterday = today - timedelta (days = 1)
-        min = rrdtool.fetch (database, "MAX", "--start=" + yesterday.strftime("%Y%m%d"), "--end=" + yesterday.strftime('%Y%m%d'))
-        day = yesterday.strftime ("%d.%m.")
-        consumption = max[2][0][0] - min[2][0][0]
-        assessmentConsumption = 0
-        if (consumption < 0.001):
-            assessmentConsumption = "2"
-        elif (consumption < 1):
-            assessmentConsumption = "1"
-        elif (consumption < 5.0):
-            assessmentConsumption = "0"
-        elif (consumption < 7.0):
-            assessmentConsumption = "1"
-        else:
-            assessmentProduction = "2"
-        production = max[2][0][1] - min[2][0][1]
-        assessmentProduction = 0
-        if (production < 0.001):
-            if production < 0.0:
-                production = 0.0
-            assessmentProduction = "-2"
-        elif (production < 0.1):
-            assessmentProduction = "-1"
-        elif (production < 0.5):
-            assessmentProduction = "0"
-        elif (production < 0.9):
-            assessmentProduction = "1"
-        else:
-            assessmentProduction = "2"
-        if (consumption < 10.0):
-            aClient.publish ("/inkplate/in/power", f"{day}@{consumption:.3f}@{assessmentConsumption}@{production:.3f}@{assessmentProduction}", qos=1, retain=True)
-        else:
-            aClient.publish ("/inkplate/in/power", f"{day}@{consumption:.2f}@{assessmentConsumption}@{production:.3f}@{assessmentProduction}", qos=1, retain=True)
+        try:
+            today = datetime.now()
+            database = "/srv/dev-disk-by-label-DISK1/localdata/powermeter.rrd"
+            max = rrdtool.fetch (database, "MAX", "--start=" + today.strftime("%Y%m%d"), "--end=" + today.strftime('%Y%m%d'))
+            yesterday = today - timedelta (days = 1)
+            min = rrdtool.fetch (database, "MAX", "--start=" + yesterday.strftime("%Y%m%d"), "--end=" + yesterday.strftime('%Y%m%d'))
+            day = yesterday.strftime ("%d.%m.")
+            consumption = max[2][0][0] - min[2][0][0]
+            assessmentConsumption = 0
+            if (consumption < 0.001):
+                assessmentConsumption = "2"
+            elif (consumption < 1):
+                assessmentConsumption = "1"
+            elif (consumption < 5.0):
+                assessmentConsumption = "0"
+            elif (consumption < 7.0):
+                assessmentConsumption = "1"
+            else:
+                assessmentProduction = "2"
+            production = max[2][0][1] - min[2][0][1]
+            assessmentProduction = 0
+            if (production < 0.001):
+                if production < 0.0:
+                    production = 0.0
+                assessmentProduction = "-2"
+            elif (production < 0.1):
+                assessmentProduction = "-1"
+            elif (production < 0.5):
+                assessmentProduction = "0"
+            elif (production < 0.9):
+                assessmentProduction = "1"
+            else:
+                assessmentProduction = "2"
+            if (consumption < 10.0):
+                aClient.publish ("/inkplate/in/power", f"{day}@{consumption:.3f}@{assessmentConsumption}@{production:.3f}@{assessmentProduction}", qos=1, retain=True)
+            else:
+                aClient.publish ("/inkplate/in/power", f"{day}@{consumption:.2f}@{assessmentConsumption}@{production:.3f}@{assessmentProduction}", qos=1, retain=True)
+        except:
+            aClient.publish ("/inkplate/in/power", "??.??.@0.000@0@0.000@0", qos=1, retain=True)
 
     def publishMOTD():
         def getEvents(my_principal, calname, calid, offset, duration):
@@ -340,6 +380,12 @@ def fullUpdate(aClient):
     print (". indoor")
     publishEnvSensors("outdoor")
     print (". outdoor")
+    publishSunTimes(client)
+    print (". rise/set")
+    publishLowest(client)
+    print (". lowest")
+    publishHighest(client)
+    print (". highest")
     publishPower()
     print (". power")
     publishTrains(client)
